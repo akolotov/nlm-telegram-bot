@@ -22,6 +22,7 @@ from telegram.ext import (
 
 from nlm_telegram_bot.notebook import (
     NotebookAuthenticationExpiredError,
+    SummaryProgress,
     summarize_youtube,
 )
 
@@ -29,10 +30,15 @@ from nlm_telegram_bot.notebook import (
 LOGGER = logging.getLogger(__name__)
 YOUTUBE_URL_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 SUPPORTED_YOUTUBE_HOSTS = {"youtube.com", "youtu.be", "youtube-nocookie.com"}
-SUMMARIZING_STATUS = "Summarizing the video…"
+ADDING_VIDEO_STATUS = "Adding the video…"
+PROGRESS_STATUS_TEXT = {
+    SummaryProgress.GENERATING_SUMMARY: "Generating the summary…",
+    SummaryProgress.SUMMARY_RECEIVED: "Summary received…",
+    SummaryProgress.CLEANING_UP: "Cleaning up temporary data…",
+}
 FAILED_TEXT = "Could not summarize this video. Please try again later."
 AUTH_EXPIRED_TEXT = (
-    "Авторизация Gemini Notebook истекла. Извините, бота нужно авторизовать заново."
+    "NotebookLM authentication has expired. The bot needs to be authenticated again."
 )
 
 
@@ -125,6 +131,26 @@ async def _replace_with_rich_summary(status_message, bot, markdown: str) -> None
     )
 
 
+async def _update_progress_status(
+    status_message,
+    stage: SummaryProgress,
+    operation_id: str,
+) -> None:
+    try:
+        await status_message.edit_text(
+            f"<i>{html.escape(PROGRESS_STATUS_TEXT[stage])}</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        LOGGER.info("[%s] Progress status updated to %s.", operation_id, stage.value)
+    except Exception as error:
+        LOGGER.warning(
+            "[%s] Could not update progress status to %s (%s).",
+            operation_id,
+            stage.value,
+            error.__class__.__name__,
+        )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if message is None or not message.text:
@@ -139,7 +165,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     status_message = None
     try:
         status_message = await message.reply_text(
-            f"<i>{SUMMARIZING_STATUS}</i>",
+            f"<i>{ADDING_VIDEO_STATUS}</i>",
             parse_mode=ParseMode.HTML,
             reply_to_message_id=message.message_id,
         )
@@ -151,8 +177,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             error.__class__.__name__,
         )
 
+    loop = asyncio.get_running_loop()
+
+    def report_progress(stage: SummaryProgress) -> None:
+        if status_message is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            _update_progress_status(status_message, stage, operation_id),
+            loop,
+        )
+        future.result()
+
     try:
-        summary = await asyncio.to_thread(summarize_youtube, video_url, operation_id)
+        summary = await asyncio.to_thread(
+            summarize_youtube,
+            video_url,
+            operation_id,
+            progress_callback=report_progress,
+        )
     except Exception as error:
         if isinstance(error, NotebookAuthenticationExpiredError):
             failure_text = AUTH_EXPIRED_TEXT
