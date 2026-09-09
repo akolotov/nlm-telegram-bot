@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
+from enum import StrEnum
 from pathlib import Path
 
 
@@ -17,6 +19,35 @@ LOGGER = logging.getLogger(__name__)
 
 class NotebookAuthenticationExpiredError(RuntimeError):
     """NotebookLM rejected the saved authentication session."""
+
+
+class SummaryProgress(StrEnum):
+    """Observable stages of a YouTube summary request."""
+
+    GENERATING_SUMMARY = "generating_summary"
+    SUMMARY_RECEIVED = "summary_received"
+    CLEANING_UP = "cleaning_up"
+
+
+ProgressCallback = Callable[[SummaryProgress], None]
+
+
+def _report_progress(
+    callback: ProgressCallback | None,
+    stage: SummaryProgress,
+    operation_id: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(stage)
+    except Exception as error:
+        LOGGER.warning(
+            "[%s] Could not report progress %s (%s).",
+            operation_id,
+            stage.value,
+            error.__class__.__name__,
+        )
 
 
 def _is_authentication_error(error: BaseException) -> bool:
@@ -67,7 +98,11 @@ def _find_notebook_id(client) -> str:
     return matches[0]["id"]
 
 
-def _summarize_youtube(video_url: str, operation_id: str) -> str:
+def _summarize_youtube(
+    video_url: str,
+    operation_id: str,
+    progress_callback: ProgressCallback | None = None,
+) -> str:
     """Temporarily add a YouTube source and return its Markdown summary."""
     from notebooklm_tools.services.chat import query
     from notebooklm_tools.services.sources import add_source, delete_source
@@ -98,6 +133,11 @@ def _summarize_youtube(video_url: str, operation_id: str) -> str:
                 "[%s] Temporary source is ready; requesting the summary.",
                 operation_id,
             )
+            _report_progress(
+                progress_callback,
+                SummaryProgress.GENERATING_SUMMARY,
+                operation_id,
+            )
             result = query(
                 client,
                 notebook_id,
@@ -110,6 +150,11 @@ def _summarize_youtube(video_url: str, operation_id: str) -> str:
             answer = result["answer"].strip()
             if not answer:
                 raise RuntimeError("NotebookLM returned an empty summary.")
+            _report_progress(
+                progress_callback,
+                SummaryProgress.SUMMARY_RECEIVED,
+                operation_id,
+            )
             LOGGER.info(
                 "[%s] Summary received from NotebookLM (%d characters).",
                 operation_id,
@@ -117,6 +162,12 @@ def _summarize_youtube(video_url: str, operation_id: str) -> str:
             )
             return answer
         finally:
+            if conversation_id or source_id:
+                _report_progress(
+                    progress_callback,
+                    SummaryProgress.CLEANING_UP,
+                    operation_id,
+                )
             if conversation_id:
                 try:
                     if not client.delete_chat_history(notebook_id, conversation_id):
@@ -144,10 +195,14 @@ def _summarize_youtube(video_url: str, operation_id: str) -> str:
                     )
 
 
-def summarize_youtube(video_url: str, operation_id: str = "standalone") -> str:
+def summarize_youtube(
+    video_url: str,
+    operation_id: str = "standalone",
+    progress_callback: ProgressCallback | None = None,
+) -> str:
     """Return a summary while exposing authentication expiry explicitly."""
     try:
-        return _summarize_youtube(video_url, operation_id)
+        return _summarize_youtube(video_url, operation_id, progress_callback)
     except Exception as error:
         if _is_authentication_error(error):
             LOGGER.warning(

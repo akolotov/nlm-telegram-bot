@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 
-from nlm_telegram_bot.notebook import NotebookAuthenticationExpiredError
+from nlm_telegram_bot.notebook import (
+    NotebookAuthenticationExpiredError,
+    SummaryProgress,
+)
 from nlm_telegram_bot.runtime import extract_youtube_url, handle_text
 
 
@@ -59,7 +62,7 @@ def test_youtube_message_becomes_rich_reply(summarize_youtube) -> None:
     assert summarize_youtube.call_args.args[0] == "https://youtu.be/abc123"
     assert len(summarize_youtube.call_args.args[1]) == 8
     message.reply_text.assert_awaited_once_with(
-        "<i>Summarizing the video…</i>",
+        "<i>Adding the video…</i>",
         parse_mode="HTML",
         reply_to_message_id=456,
     )
@@ -71,6 +74,47 @@ def test_youtube_message_becomes_rich_reply(summarize_youtube) -> None:
             "rich_message": {"markdown": "# Summary\n\n- First point"},
         },
     )
+
+
+def test_progress_statuses_are_updated_in_order() -> None:
+    def summarize(_url, _operation_id, *, progress_callback):
+        progress_callback(SummaryProgress.GENERATING_SUMMARY)
+        progress_callback(SummaryProgress.SUMMARY_RECEIVED)
+        progress_callback(SummaryProgress.CLEANING_UP)
+        return "# Summary"
+
+    update, context, _message, status, bot = make_request(
+        "https://youtu.be/abc123"
+    )
+
+    with patch("nlm_telegram_bot.runtime.summarize_youtube", side_effect=summarize):
+        asyncio.run(handle_text(update, context))
+
+    assert status.edit_text.await_args_list == [
+        call("<i>Generating the summary…</i>", parse_mode="HTML"),
+        call("<i>Summary received…</i>", parse_mode="HTML"),
+        call("<i>Cleaning up temporary data…</i>", parse_mode="HTML"),
+    ]
+    bot._post.assert_awaited_once()
+
+
+def test_progress_update_failure_does_not_stop_summary() -> None:
+    def summarize(_url, _operation_id, *, progress_callback):
+        progress_callback(SummaryProgress.GENERATING_SUMMARY)
+        return "# Summary"
+
+    update, context, _message, status, bot = make_request(
+        "https://youtu.be/abc123"
+    )
+    status.edit_text.side_effect = RuntimeError("Telegram unavailable")
+
+    with patch("nlm_telegram_bot.runtime.summarize_youtube", side_effect=summarize):
+        asyncio.run(handle_text(update, context))
+
+    status.edit_text.assert_awaited_once_with(
+        "<i>Generating the summary…</i>", parse_mode="HTML"
+    )
+    bot._post.assert_awaited_once()
 
 
 @patch(
@@ -132,8 +176,8 @@ def test_expired_authentication_gets_specific_message(_summarize_youtube) -> Non
     asyncio.run(handle_text(update, context))
 
     status.edit_text.assert_awaited_once_with(
-        "<i>Авторизация Gemini Notebook истекла. Извините, бота нужно "
-        "авторизовать заново.</i>",
+        "<i>NotebookLM authentication has expired. The bot needs to be "
+        "authenticated again.</i>",
         parse_mode="HTML",
     )
     bot._post.assert_not_awaited()

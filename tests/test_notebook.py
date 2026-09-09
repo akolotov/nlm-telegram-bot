@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from notebooklm_tools.core.errors import ClientAuthenticationError
@@ -8,6 +8,7 @@ from notebooklm_tools.services.errors import ServiceError
 
 from nlm_telegram_bot.notebook import (
     NotebookAuthenticationExpiredError,
+    SummaryProgress,
     summarize_youtube,
 )
 
@@ -38,8 +39,11 @@ def test_summary_uses_only_temporary_source_and_cleans_up(
         "answer": "  # Summary\n\nUseful text  ",
         "conversation_id": "conversation-id",
     }
+    progress_callback = MagicMock()
 
-    result = summarize_youtube("https://youtu.be/abc123")
+    result = summarize_youtube(
+        "https://youtu.be/abc123", progress_callback=progress_callback
+    )
 
     assert result == "# Summary\n\nUseful text"
     assert query.call_args.kwargs["source_ids"] == ["source-id"]
@@ -47,6 +51,11 @@ def test_summary_uses_only_temporary_source_and_cleans_up(
         "notebook-id", "conversation-id"
     )
     delete_source.assert_called_once_with(client, "source-id")
+    assert progress_callback.call_args_list == [
+        call(SummaryProgress.GENERATING_SUMMARY),
+        call(SummaryProgress.SUMMARY_RECEIVED),
+        call(SummaryProgress.CLEANING_UP),
+    ]
 
 
 @patch("notebooklm_tools.services.sources.delete_source")
@@ -64,12 +73,19 @@ def test_query_failure_still_removes_temporary_source(
     client = make_client()
     make_client_mock.return_value = client
     add_source.return_value = {"source_id": "source-id"}
+    progress_callback = MagicMock()
 
     with pytest.raises(RuntimeError, match="query failed"):
-        summarize_youtube("https://youtu.be/abc123")
+        summarize_youtube(
+            "https://youtu.be/abc123", progress_callback=progress_callback
+        )
 
     client.delete_chat_history.assert_not_called()
     delete_source.assert_called_once_with(client, "source-id")
+    assert progress_callback.call_args_list == [
+        call(SummaryProgress.GENERATING_SUMMARY),
+        call(SummaryProgress.CLEANING_UP),
+    ]
 
 
 @patch("nlm_telegram_bot.notebook._summarize_youtube")
