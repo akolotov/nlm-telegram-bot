@@ -8,6 +8,7 @@ from notebooklm_tools.services.errors import ServiceError
 
 from nlm_telegram_bot.notebook import (
     NotebookAuthenticationExpiredError,
+    SUMMARY_QUERY,
     SummaryProgress,
     summarize_youtube,
 )
@@ -46,6 +47,8 @@ def test_summary_uses_only_temporary_source_and_cleans_up(
     )
 
     assert result == "# Summary\n\nUseful text"
+    assert query.call_args.args[2] == SUMMARY_QUERY
+    assert "Не используй Markdown-таблицы" in SUMMARY_QUERY
     assert query.call_args.kwargs["source_ids"] == ["source-id"]
     client.delete_chat_history.assert_called_once_with(
         "notebook-id", "conversation-id"
