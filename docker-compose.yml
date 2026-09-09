@@ -1,0 +1,44 @@
+services:
+  bot:
+    image: ${BOT_IMAGE:-ghcr.io/akolotov/nlm-telegram-bot:latest}
+    pull_policy: ${BOT_PULL_POLICY:-always}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      NOTEBOOKLM_MCP_CLI_PATH: /state/notebooklm
+      WEBHOOK_LISTEN_HOST: 0.0.0.0
+      WEBHOOK_LISTEN_PORT: "8080"
+    volumes:
+      - ./.nlm-runtime:/state/notebooklm
+    expose:
+      - "8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+    networks:
+      tailscale-ingress:
+        aliases:
+          - ${WEBHOOK_DOCKER_ALIAS:?WEBHOOK_DOCKER_ALIAS must be set}
+
+  nlm-tools:
+    profiles:
+      - tools
+    image: ${BOT_IMAGE:-ghcr.io/akolotov/nlm-telegram-bot:latest}
+    pull_policy: ${BOT_PULL_POLICY:-always}
+    init: true
+    environment:
+      NOTEBOOKLM_MCP_CLI_PATH: /state/notebooklm
+    volumes:
+      - ./.nlm-runtime:/state/notebooklm
+    working_dir: /app
+    entrypoint:
+      - nlm
+
+networks:
+  tailscale-ingress:
+    external: true
+    name: tailscale-ingress
