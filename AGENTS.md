@@ -22,6 +22,6 @@ Run `gh` commands outside the sandbox.
 
 Use Docker Compose for deployment and configured end-to-end runs. Before starting, verify required configuration without printing secret values.
 
-Published images are the default. To test local code, build an exact local image tag and set `BOT_IMAGE` to it and `BOT_PULL_POLICY=never`.
+For local verification, always rebuild the image set by `BOT_IMAGE` in `.env`; do not use unique image tags.
 
 Production and staging must use distinct `COMPOSE_PROJECT_NAME`, Telegram bot token, webhook alias, webhook path, and webhook secret. Do not set `container_name`, bypass Compose with `docker run`, or replace configured runtime data with synthetic values.
