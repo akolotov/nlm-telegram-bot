@@ -7,9 +7,11 @@ from notebooklm_tools.core.errors import ClientAuthenticationError
 from notebooklm_tools.services.errors import ServiceError
 
 from nlm_telegram_bot.notebook import (
+    ACTIONABLE_SUMMARY_QUERY,
     NotebookAuthenticationExpiredError,
     SUMMARY_QUERY,
     SummaryProgress,
+    SummaryType,
     summarize_youtube,
 )
 
@@ -26,12 +28,21 @@ def make_client() -> MagicMock:
 @patch("notebooklm_tools.services.chat.query")
 @patch("nlm_telegram_bot.notebook._find_notebook_id", return_value="notebook-id")
 @patch("nlm_telegram_bot.notebook._make_client")
+@pytest.mark.parametrize(
+    ("summary_type", "expected_query"),
+    [
+        (SummaryType.KNOWLEDGE, SUMMARY_QUERY),
+        (SummaryType.ACTIONABLE, ACTIONABLE_SUMMARY_QUERY),
+    ],
+)
 def test_summary_uses_only_temporary_source_and_cleans_up(
     make_client_mock,
     _find_notebook_id,
     query,
     add_source,
     delete_source,
+    summary_type,
+    expected_query,
 ) -> None:
     client = make_client()
     make_client_mock.return_value = client
@@ -43,12 +54,14 @@ def test_summary_uses_only_temporary_source_and_cleans_up(
     progress_callback = MagicMock()
 
     result = summarize_youtube(
-        "https://youtu.be/abc123", progress_callback=progress_callback
+        "https://youtu.be/abc123",
+        summary_type=summary_type,
+        progress_callback=progress_callback,
     )
 
     assert result == "# Summary\n\nUseful text"
-    assert query.call_args.args[2] == SUMMARY_QUERY
-    assert "Не используй Markdown-таблицы" in SUMMARY_QUERY
+    assert query.call_args.args[2] == expected_query
+    assert "Не используй Markdown-таблицы" in expected_query
     assert query.call_args.kwargs["source_ids"] == ["source-id"]
     client.delete_chat_history.assert_called_once_with(
         "notebook-id", "conversation-id"

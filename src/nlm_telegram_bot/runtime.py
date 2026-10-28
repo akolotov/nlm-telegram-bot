@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -23,6 +24,7 @@ from telegram.ext import (
 from nlm_telegram_bot.notebook import (
     NotebookAuthenticationExpiredError,
     SummaryProgress,
+    SummaryType,
     summarize_youtube,
 )
 
@@ -30,6 +32,10 @@ from nlm_telegram_bot.notebook import (
 LOGGER = logging.getLogger(__name__)
 YOUTUBE_URL_RE = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
 SUPPORTED_YOUTUBE_HOSTS = {"youtube.com", "youtu.be", "youtube-nocookie.com"}
+SUMMARY_CALLBACK_PREFIX = "summary:"
+ACTIVE_REQUESTS_KEY = "active_summary_requests"
+ALLOWED_USER_IDS_KEY = "allowed_user_ids"
+CHOOSE_SUMMARY_TEXT = "Choose the summary type:"
 ADDING_VIDEO_STATUS = "Adding the video…"
 PROGRESS_STATUS_TEXT = {
     SummaryProgress.GENERATING_SUMMARY: "Generating the summary…",
@@ -39,6 +45,25 @@ PROGRESS_STATUS_TEXT = {
 FAILED_TEXT = "Could not summarize this video. Please try again later."
 AUTH_EXPIRED_TEXT = (
     "NotebookLM authentication has expired. The bot needs to be authenticated again."
+)
+REQUEST_UNAVAILABLE_TEXT = "This summary request is no longer available."
+INVALID_SELECTION_TEXT = "This summary type is not supported."
+
+SUMMARY_KEYBOARD = InlineKeyboardMarkup(
+    [
+        [
+            InlineKeyboardButton(
+                "📚 Получить конспект",
+                callback_data=f"{SUMMARY_CALLBACK_PREFIX}{SummaryType.KNOWLEDGE}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "💡 Разобрать доклад",
+                callback_data=f"{SUMMARY_CALLBACK_PREFIX}{SummaryType.ACTIONABLE}",
+            )
+        ],
+    ]
 )
 
 
@@ -92,7 +117,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     if update.effective_message is not None:
         await update.effective_message.reply_text(
-            "Send me a YouTube link and I will reply with a summary."
+            "Send me a YouTube link, then choose the summary type."
         )
 
 
@@ -140,6 +165,7 @@ async def _update_progress_status(
         await status_message.edit_text(
             f"<i>{html.escape(PROGRESS_STATUS_TEXT[stage])}</i>",
             parse_mode=ParseMode.HTML,
+            reply_markup=None,
         )
         LOGGER.info("[%s] Progress status updated to %s.", operation_id, stage.value)
     except Exception as error:
@@ -151,31 +177,19 @@ async def _update_progress_status(
         )
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    if message is None or not message.text:
-        return
-
-    video_url = extract_youtube_url(message.text)
-    if video_url is None:
-        return
-
+async def _process_summary(
+    message,
+    status_message,
+    context: ContextTypes.DEFAULT_TYPE,
+    video_url: str,
+    summary_type: SummaryType,
+) -> None:
     operation_id = uuid.uuid4().hex[:8]
-    LOGGER.info("[%s] Accepted a YouTube summary request.", operation_id)
-    status_message = None
-    try:
-        status_message = await message.reply_text(
-            f"<i>{ADDING_VIDEO_STATUS}</i>",
-            parse_mode=ParseMode.HTML,
-            reply_to_message_id=message.message_id,
-        )
-        LOGGER.info("[%s] Processing status reply sent.", operation_id)
-    except Exception as error:
-        LOGGER.warning(
-            "[%s] Could not create the status reply (%s).",
-            operation_id,
-            error.__class__.__name__,
-        )
+    LOGGER.info(
+        "[%s] Processing a YouTube summary request (%s).",
+        operation_id,
+        summary_type.value,
+    )
 
     loop = asyncio.get_running_loop()
 
@@ -193,6 +207,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             summarize_youtube,
             video_url,
             operation_id,
+            summary_type=summary_type,
             progress_callback=report_progress,
         )
     except Exception as error:
@@ -212,7 +227,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if status_message is not None:
             try:
                 await status_message.edit_text(
-                    f"<i>{html.escape(failure_text)}</i>", parse_mode=ParseMode.HTML
+                    f"<i>{html.escape(failure_text)}</i>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
                 )
                 LOGGER.info("[%s] Failure status delivered.", operation_id)
                 return
@@ -256,6 +273,99 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     LOGGER.info("[%s] Rich Message summary delivered.", operation_id)
 
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    message = update.effective_message
+    if message is None or not message.text:
+        return
+
+    video_url = extract_youtube_url(message.text)
+    if video_url is None:
+        return
+
+    try:
+        await message.reply_text(
+            CHOOSE_SUMMARY_TEXT,
+            reply_markup=SUMMARY_KEYBOARD,
+            reply_to_message_id=message.message_id,
+        )
+        LOGGER.info("Accepted a YouTube link and requested a summary type.")
+    except Exception as error:
+        LOGGER.warning(
+            "Could not create the summary type selector (%s).",
+            error.__class__.__name__,
+        )
+
+
+async def handle_summary_choice(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    callback_query = update.callback_query
+    if callback_query is None:
+        return
+
+    allowed_user_ids = context.bot_data.get(ALLOWED_USER_IDS_KEY, frozenset())
+    user = update.effective_user
+    if user is None or user.id not in allowed_user_ids:
+        await callback_query.answer(
+            "You are not allowed to use this bot.",
+            show_alert=True,
+        )
+        return
+
+    callback_message = callback_query.message
+    if callback_message is None or not callback_message.is_accessible:
+        await callback_query.answer(REQUEST_UNAVAILABLE_TEXT)
+        return
+    await callback_query.answer()
+
+    callback_data = callback_query.data or ""
+    try:
+        summary_type = SummaryType(callback_data.removeprefix(SUMMARY_CALLBACK_PREFIX))
+    except ValueError:
+        await callback_message.edit_text(INVALID_SELECTION_TEXT, reply_markup=None)
+        return
+
+    original_message = callback_message.reply_to_message
+    video_url = (
+        extract_youtube_url(original_message.text)
+        if original_message is not None and original_message.text
+        else None
+    )
+    if video_url is None:
+        await callback_message.edit_text(REQUEST_UNAVAILABLE_TEXT, reply_markup=None)
+        return
+
+    request_key = (callback_message.chat_id, callback_message.message_id)
+    active_requests = context.bot_data.setdefault(ACTIVE_REQUESTS_KEY, set())
+    if request_key in active_requests:
+        return
+    active_requests.add(request_key)
+
+    try:
+        try:
+            await callback_message.edit_text(
+                f"<i>{ADDING_VIDEO_STATUS}</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception as error:
+            LOGGER.warning(
+                "Could not replace the summary selector with a status (%s).",
+                error.__class__.__name__,
+            )
+        await _process_summary(
+            original_message,
+            callback_message,
+            context,
+            video_url,
+            summary_type,
+        )
+    finally:
+        active_requests.discard(request_key)
+
+
 def main() -> None:
     from dotenv import load_dotenv
 
@@ -274,8 +384,12 @@ def main() -> None:
     application = (
         ApplicationBuilder().token(settings.bot_token).concurrent_updates(True).build()
     )
+    application.bot_data[ALLOWED_USER_IDS_KEY] = settings.allowed_user_ids
     allowed_users = filters.User(user_id=settings.allowed_user_ids)
     application.add_handler(CommandHandler("start", start, filters=allowed_users))
+    application.add_handler(
+        CallbackQueryHandler(handle_summary_choice, pattern=r"^summary:")
+    )
     application.add_handler(
         MessageHandler(allowed_users & filters.TEXT & ~filters.COMMAND, handle_text)
     )

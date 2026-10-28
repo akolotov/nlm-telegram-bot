@@ -15,12 +15,31 @@ SUMMARY_QUERY = (
     "используй Markdown-таблицы: вместо них представляй данные в виде маркированных "
     "или нумерованных списков."
 )
+ACTIONABLE_SUMMARY_QUERY = (
+    "Сделай качественное summary доклада: какие темы поднимались, какие практические "
+    "примеры рассматривались, какие можно извлечь actionable items. Оформи ответ в "
+    "Markdown с понятными заголовками и списками. Не используй Markdown-таблицы: "
+    "вместо них представляй данные в виде маркированных или нумерованных списков."
+)
 
 LOGGER = logging.getLogger(__name__)
 
 
 class NotebookAuthenticationExpiredError(RuntimeError):
     """NotebookLM rejected the saved authentication session."""
+
+
+class SummaryType(StrEnum):
+    """Supported summary prompts."""
+
+    KNOWLEDGE = "knowledge"
+    ACTIONABLE = "actionable"
+
+
+SUMMARY_QUERIES = {
+    SummaryType.KNOWLEDGE: SUMMARY_QUERY,
+    SummaryType.ACTIONABLE: ACTIONABLE_SUMMARY_QUERY,
+}
 
 
 class SummaryProgress(StrEnum):
@@ -103,6 +122,7 @@ def _find_notebook_id(client) -> str:
 def _summarize_youtube(
     video_url: str,
     operation_id: str,
+    summary_type: SummaryType = SummaryType.KNOWLEDGE,
     progress_callback: ProgressCallback | None = None,
 ) -> str:
     """Temporarily add a YouTube source and return its Markdown summary."""
@@ -143,7 +163,7 @@ def _summarize_youtube(
             result = query(
                 client,
                 notebook_id,
-                SUMMARY_QUERY,
+                SUMMARY_QUERIES[summary_type],
                 source_ids=[source_id],
                 timeout=180.0,
                 new_conversation=True,
@@ -200,11 +220,18 @@ def _summarize_youtube(
 def summarize_youtube(
     video_url: str,
     operation_id: str = "standalone",
+    *,
+    summary_type: SummaryType = SummaryType.KNOWLEDGE,
     progress_callback: ProgressCallback | None = None,
 ) -> str:
     """Return a summary while exposing authentication expiry explicitly."""
     try:
-        return _summarize_youtube(video_url, operation_id, progress_callback)
+        return _summarize_youtube(
+            video_url,
+            operation_id,
+            summary_type=summary_type,
+            progress_callback=progress_callback,
+        )
     except Exception as error:
         if _is_authentication_error(error):
             LOGGER.warning(
