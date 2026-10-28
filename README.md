@@ -2,9 +2,11 @@
 
 Python Telegram bot deployed by webhook through a shared Tailscale Funnel
 gateway. Send it a YouTube URL and it temporarily adds the video to the
-`NLM-bot-placeholder` notebook, asks NotebookLM for a structured summary, and
-returns the Markdown result as a Telegram Rich Message reply. The temporary
-source and query conversation are removed afterward.
+`NLM-bot-placeholder` notebook after you choose one of two summary types:
+a detailed stream overview or a talk breakdown with actionable items. It asks
+NotebookLM for the selected structured summary and returns the Markdown result
+as a Telegram Rich Message reply. The temporary source and query conversation
+are removed afterward.
 
 ## Development
 
