@@ -314,10 +314,11 @@ async def handle_summary_choice(
         )
         return
 
-    await callback_query.answer()
     callback_message = callback_query.message
-    if callback_message is None:
+    if callback_message is None or not callback_message.is_accessible:
+        await callback_query.answer(REQUEST_UNAVAILABLE_TEXT)
         return
+    await callback_query.answer()
 
     callback_data = callback_query.data or ""
     try:

@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
+from telegram import Chat, InaccessibleMessage
 
 from nlm_telegram_bot.notebook import (
     NotebookAuthenticationExpiredError,
@@ -74,6 +75,7 @@ def make_callback_request(
     status_message = Mock(
         chat_id=123,
         message_id=789,
+        is_accessible=True,
         reply_to_message=original_message,
         edit_text=AsyncMock(),
     )
@@ -289,6 +291,25 @@ def test_request_without_original_video_is_rejected() -> None:
         REQUEST_UNAVAILABLE_TEXT,
         reply_markup=None,
     )
+    bot._post.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "callback_message",
+    [None, InaccessibleMessage(chat=Chat(id=123, type="private"), message_id=789)],
+)
+@patch("nlm_telegram_bot.runtime.summarize_youtube")
+def test_unavailable_callback_message_is_rejected(
+    summarize_youtube, callback_message
+) -> None:
+    update, context, _original, status, callback_query, bot = make_callback_request()
+    callback_query.message = callback_message
+
+    asyncio.run(handle_summary_choice(update, context))
+
+    callback_query.answer.assert_awaited_once_with(REQUEST_UNAVAILABLE_TEXT)
+    status.edit_text.assert_not_awaited()
+    summarize_youtube.assert_not_called()
     bot._post.assert_not_awaited()
 
 
