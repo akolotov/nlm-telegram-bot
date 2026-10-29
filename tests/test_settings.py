@@ -41,3 +41,42 @@ def test_settings_reject_invalid_allowed_user_ids(
 
     with pytest.raises(RuntimeError, match="ALLOWED_USER_IDS"):
         Settings.from_env()
+
+
+@pytest.fixture(autouse=True)
+def configure_gemini(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-secret")
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+
+
+@pytest.fixture
+def required_environment(monkeypatch):
+    for name, value in {
+        "TELEGRAM_BOT_TOKEN": "token",
+        "ALLOWED_USER_IDS": "123",
+        "WEBHOOK_PUBLIC_BASE_URL": "https://example.test",
+        "WEBHOOK_PATH": "/telegram",
+        "WEBHOOK_SECRET_TOKEN": "secret",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+
+@pytest.mark.parametrize("key", [None, "", "   "])
+def test_settings_require_gemini_key(monkeypatch, required_environment, key):
+    if key is None:
+        monkeypatch.delenv("GEMINI_API_KEY")
+    else:
+        monkeypatch.setenv("GEMINI_API_KEY", key)
+    with pytest.raises(RuntimeError, match="GEMINI_API_KEY is required"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize("model", [None, "", "  ", " custom-model "])
+def test_settings_select_gemini_model(monkeypatch, required_environment, model):
+    if model is not None:
+        monkeypatch.setenv("GEMINI_MODEL", model)
+    settings = Settings.from_env()
+    expected = "custom-model" if model and model.strip() else "gemini-3.8-flash"
+    assert settings.gemini_model == expected
+    assert settings.gemini_api_key == "test-gemini-secret"
+    assert "test-gemini-secret" not in repr(settings)

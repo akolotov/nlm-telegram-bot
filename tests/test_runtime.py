@@ -6,14 +6,15 @@ from unittest.mock import AsyncMock, Mock, call, patch
 import pytest
 from telegram import Chat, InaccessibleMessage
 
-from nlm_telegram_bot.notebook import (
-    NotebookAuthenticationExpiredError,
+from nlm_telegram_bot.summarizer import (
+    SummaryRateLimitError,
     SummaryProgress,
     SummaryType,
 )
 from nlm_telegram_bot.runtime import (
     ACTIVE_REQUESTS_KEY,
     ALLOWED_USER_IDS_KEY,
+    GEMINI_SETTINGS_KEY,
     CHOOSE_SUMMARY_TEXT,
     INVALID_SELECTION_TEXT,
     REQUEST_UNAVAILABLE_TEXT,
@@ -89,13 +90,14 @@ def make_callback_request(
         effective_user=Mock(id=42),
     )
     bot = Mock(_post=AsyncMock())
+    if bot_data is None:
+        bot_data = {ALLOWED_USER_IDS_KEY: frozenset({42})}
+    bot_data[GEMINI_SETTINGS_KEY] = Mock(
+        gemini_api_key="test-key", gemini_model="custom-model"
+    )
     context = Mock(
         bot=bot,
-        bot_data=(
-            {ALLOWED_USER_IDS_KEY: frozenset({42})}
-            if bot_data is None
-            else bot_data
-        ),
+        bot_data=bot_data,
     )
     return update, context, original_message, status_message, callback_query, bot
 
@@ -137,7 +139,7 @@ def test_summary_choice_becomes_rich_reply(summarize_youtube, summary_type) -> N
 
     callback_query.answer.assert_awaited_once_with()
     assert status.edit_text.await_args_list[0] == call(
-        "<i>Adding the video…</i>",
+        "<i>Preparing the request…</i>",
         parse_mode="HTML",
         reply_markup=None,
     )
@@ -145,6 +147,8 @@ def test_summary_choice_becomes_rich_reply(summarize_youtube, summary_type) -> N
     assert summarize_youtube.call_args.args[0] == "https://youtu.be/abc123"
     assert len(summarize_youtube.call_args.args[1]) == 8
     assert summarize_youtube.call_args.kwargs["summary_type"] == summary_type
+    assert summarize_youtube.call_args.kwargs["api_key"] == "test-key"
+    assert summarize_youtube.call_args.kwargs["model"] == "custom-model"
     bot._post.assert_awaited_once_with(
         "editMessageText",
         data={
@@ -156,11 +160,10 @@ def test_summary_choice_becomes_rich_reply(summarize_youtube, summary_type) -> N
 
 
 def test_progress_statuses_are_updated_in_order() -> None:
-    def summarize(_url, _operation_id, *, summary_type, progress_callback):
+    def summarize(_url, _operation_id, *, api_key, model, summary_type, progress_callback):
         assert summary_type == SummaryType.KNOWLEDGE
         progress_callback(SummaryProgress.GENERATING_SUMMARY)
         progress_callback(SummaryProgress.SUMMARY_RECEIVED)
-        progress_callback(SummaryProgress.CLEANING_UP)
         return "# Summary"
 
     update, context, _original, status, _query, bot = make_callback_request()
@@ -169,24 +172,19 @@ def test_progress_statuses_are_updated_in_order() -> None:
         asyncio.run(handle_summary_choice(update, context))
 
     assert status.edit_text.await_args_list == [
-        call("<i>Adding the video…</i>", parse_mode="HTML", reply_markup=None),
+        call("<i>Preparing the request…</i>", parse_mode="HTML", reply_markup=None),
         call(
             "<i>Generating the summary…</i>",
             parse_mode="HTML",
             reply_markup=None,
         ),
         call("<i>Summary received…</i>", parse_mode="HTML", reply_markup=None),
-        call(
-            "<i>Cleaning up temporary data…</i>",
-            parse_mode="HTML",
-            reply_markup=None,
-        ),
     ]
     bot._post.assert_awaited_once()
 
 
 def test_progress_update_failure_does_not_stop_summary() -> None:
-    def summarize(_url, _operation_id, *, summary_type, progress_callback):
+    def summarize(_url, _operation_id, *, api_key, model, summary_type, progress_callback):
         progress_callback(SummaryProgress.GENERATING_SUMMARY)
         return "# Summary"
 
@@ -249,16 +247,15 @@ def test_processing_error_replaces_status_with_safe_message(_summarize) -> None:
 
 @patch(
     "nlm_telegram_bot.runtime.summarize_youtube",
-    side_effect=NotebookAuthenticationExpiredError(),
+    side_effect=SummaryRateLimitError(),
 )
-def test_expired_authentication_gets_specific_message(_summarize) -> None:
+def test_rate_limit_gets_specific_message(_summarize) -> None:
     update, context, _original, status, _query, bot = make_callback_request()
 
     asyncio.run(handle_summary_choice(update, context))
 
     assert status.edit_text.await_args_list[-1] == call(
-        "<i>NotebookLM authentication has expired. The bot needs to be "
-        "authenticated again.</i>",
+        "<i>The summary service rate limit was reached. Please try again later.</i>",
         parse_mode="HTML",
         reply_markup=None,
     )

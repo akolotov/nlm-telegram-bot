@@ -1,1 +1,1 @@
-"""Gemini Notebook Telegram Bot."""
+"""Telegram bot for structured YouTube video summaries."""
