@@ -18,13 +18,12 @@ FROM python:3.12-slim AS runtime
 ENV VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    NOTEBOOKLM_MCP_CLI_PATH=/state/notebooklm
+    PYTHONUNBUFFERED=1
 
 RUN groupadd --gid 1000 app \
     && useradd --uid 1000 --gid app --create-home --home-dir /home/app app \
-    && mkdir -p /app /state \
-    && chown -R app:app /app /state
+    && mkdir -p /app \
+    && chown -R app:app /app
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv

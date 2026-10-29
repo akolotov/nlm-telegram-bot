@@ -7,3 +7,5 @@ cookies.txt
 .pytest_cache/
 *.egg-info/
 output/
+/scripts/gemini_video_poc.py
+/artifacts/

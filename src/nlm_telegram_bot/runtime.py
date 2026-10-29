@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -21,9 +21,10 @@ from telegram.ext import (
     filters,
 )
 
-from nlm_telegram_bot.notebook import (
-    NotebookAuthenticationExpiredError,
+from nlm_telegram_bot.summarizer import (
+    DEFAULT_MODEL,
     SummaryProgress,
+    SummaryRateLimitError,
     SummaryType,
     summarize_youtube,
 )
@@ -35,17 +36,15 @@ SUPPORTED_YOUTUBE_HOSTS = {"youtube.com", "youtu.be", "youtube-nocookie.com"}
 SUMMARY_CALLBACK_PREFIX = "summary:"
 ACTIVE_REQUESTS_KEY = "active_summary_requests"
 ALLOWED_USER_IDS_KEY = "allowed_user_ids"
+GEMINI_SETTINGS_KEY = "gemini_settings"
 CHOOSE_SUMMARY_TEXT = "Choose the summary type:"
-ADDING_VIDEO_STATUS = "Adding the video…"
+PREPARING_REQUEST_STATUS = "Preparing the request…"
 PROGRESS_STATUS_TEXT = {
     SummaryProgress.GENERATING_SUMMARY: "Generating the summary…",
     SummaryProgress.SUMMARY_RECEIVED: "Summary received…",
-    SummaryProgress.CLEANING_UP: "Cleaning up temporary data…",
 }
 FAILED_TEXT = "Could not summarize this video. Please try again later."
-AUTH_EXPIRED_TEXT = (
-    "NotebookLM authentication has expired. The bot needs to be authenticated again."
-)
+RATE_LIMIT_TEXT = "The summary service rate limit was reached. Please try again later."
 REQUEST_UNAVAILABLE_TEXT = "This summary request is no longer available."
 INVALID_SELECTION_TEXT = "This summary type is not supported."
 
@@ -74,6 +73,8 @@ class Settings:
     public_base_url: str
     webhook_path: str
     webhook_secret_token: str
+    gemini_api_key: str = field(repr=False)
+    gemini_model: str = DEFAULT_MODEL
     listen_host: str = "0.0.0.0"
     listen_port: int = 8080
     log_level: str = "INFO"
@@ -103,6 +104,8 @@ class Settings:
 
         return cls(
             bot_token=bot_token,
+            gemini_api_key=required("GEMINI_API_KEY"),
+            gemini_model=os.environ.get("GEMINI_MODEL", "").strip() or DEFAULT_MODEL,
             allowed_user_ids=allowed_user_ids,
             public_base_url=required("WEBHOOK_PUBLIC_BASE_URL").rstrip("/"),
             webhook_path="/" + required("WEBHOOK_PATH").strip("/"),
@@ -203,27 +206,25 @@ async def _process_summary(
         future.result()
 
     try:
+        settings = context.bot_data[GEMINI_SETTINGS_KEY]
         summary = await asyncio.to_thread(
             summarize_youtube,
             video_url,
             operation_id,
+            api_key=settings.gemini_api_key,
+            model=settings.gemini_model,
             summary_type=summary_type,
             progress_callback=report_progress,
         )
     except Exception as error:
-        if isinstance(error, NotebookAuthenticationExpiredError):
-            failure_text = AUTH_EXPIRED_TEXT
-            LOGGER.warning(
-                "[%s] Summary stopped because NotebookLM authentication expired.",
-                operation_id,
-            )
-        else:
-            failure_text = FAILED_TEXT
-            LOGGER.error(
-                "[%s] YouTube summary processing failed (%s).",
-                operation_id,
-                error.__class__.__name__,
-            )
+        failure_text = (
+            RATE_LIMIT_TEXT if isinstance(error, SummaryRateLimitError) else FAILED_TEXT
+        )
+        LOGGER.error(
+            "[%s] YouTube summary processing failed (%s).",
+            operation_id,
+            error.__class__.__name__,
+        )
         if status_message is not None:
             try:
                 await status_message.edit_text(
@@ -346,7 +347,7 @@ async def handle_summary_choice(
     try:
         try:
             await callback_message.edit_text(
-                f"<i>{ADDING_VIDEO_STATUS}</i>",
+                f"<i>{PREPARING_REQUEST_STATUS}</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=None,
             )
@@ -378,13 +379,14 @@ def main() -> None:
     # HTTP client URLs can contain the Telegram bot token. Keep all request-level
     # logging in external network libraries disabled and emit sanitized stage
     # messages from this application instead.
-    for logger_name in ("httpx", "httpcore", "notebooklm_tools"):
+    for logger_name in ("httpx", "httpcore", "google_genai"):
         logging.getLogger(logger_name).setLevel(logging.WARNING)
     LOGGER.info("Starting the Telegram webhook bot; configuration is loaded.")
     application = (
         ApplicationBuilder().token(settings.bot_token).concurrent_updates(True).build()
     )
     application.bot_data[ALLOWED_USER_IDS_KEY] = settings.allowed_user_ids
+    application.bot_data[GEMINI_SETTINGS_KEY] = settings
     allowed_users = filters.User(user_id=settings.allowed_user_ids)
     application.add_handler(CommandHandler("start", start, filters=allowed_users))
     application.add_handler(

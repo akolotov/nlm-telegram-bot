@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nlm-telegram-bot"
 version = "0.1.0"
-description = "Gemini Notebook Telegram Bot."
+description = "Telegram bot for structured YouTube video summaries."
 requires-python = ">=3.12"
 dependencies = [
-    "notebooklm-mcp-cli==0.11.2",
+    "google-genai==2.33.0",
     "python-dotenv>=1.0,<2.0",
     "python-telegram-bot[webhooks]>=22,<23",
 ]

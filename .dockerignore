@@ -8,3 +8,9 @@ cookies.txt
 *.pyc
 *.md
 output
+
+.env.*
+artifacts
+.ai
+scripts
+tests
